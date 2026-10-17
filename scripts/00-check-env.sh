@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
 log "DevOs $DEVOS_VERSION — build environment check"
-log "Architecture : $(uname -m)   (target: $DEVOS_ARCH — auto-detected)"
+log "Architecture : host $(uname -m) → target $DEVOS_ARCH $([ "$IS_CROSS" = 1 ] && echo '(CROSS)')"
 log "Host kernel  : $(uname -r)"
 log "CPU cores    : $(nproc)"
 log "Memory       : $(free -h | awk '/^Mem:/ {print $2}')"

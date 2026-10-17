@@ -2,16 +2,18 @@
 # common.sh — shared configuration for DevOs build scripts
 # DevOs: a minimal Linux OS built from the latest mainline kernel + BusyBox
 #
-# Architecture is auto-detected from the build host: aarch64 (arm64) or
-# x86_64. Everything downstream (kernel image, musl target, QEMU binary,
-# GitHub CLI asset, ...) is derived from it.
+# Architecture handling:
+#   - Build host arch is auto-detected (DEVOS_HOST_ARCH).
+#   - Target arch defaults to the host arch; set DEVOS_TARGET_ARCH=x86_64
+#     (or aarch64) to cross-build the other architecture. Every arch-specific
+#     knob below is derived from the TARGET arch.
 
 set -euo pipefail
 
 # ---- versions ------------------------------------------------------------
 export KERNEL_VERSION="7.2.11"
 export BUSYBOX_VERSION="1.38.0"
-export DEVOS_VERSION="1.0.0"
+export DEVOS_VERSION="1.1.0"
 
 # ---- helpers -------------------------------------------------------------
 log() { printf '\033[1;36m[devos]\033[0m %s\n' "$*"; }
@@ -32,15 +34,27 @@ require_tools() {
     fi
 }
 
-# ---- architecture (auto: aarch64 | x86_64) --------------------------------
+# ---- architecture ---------------------------------------------------------
 case "$(uname -m)" in
-    aarch64|arm64) DEVOS_ARCH=aarch64 ;;
-    x86_64|amd64)  DEVOS_ARCH=x86_64 ;;
-    *) die "unsupported build host architecture: $(uname -m) (supported: aarch64/arm64, x86_64/amd64)" ;;
+    aarch64|arm64) DEVOS_HOST_ARCH=aarch64 ;;
+    x86_64|amd64)  DEVOS_HOST_ARCH=x86_64 ;;
+    *) die "unsupported build host architecture: $(uname -m)" ;;
 esac
-export DEVOS_ARCH
+case "${DEVOS_TARGET_ARCH:-$DEVOS_HOST_ARCH}" in
+    aarch64|arm64) DEVOS_TARGET_ARCH=aarch64 ;;
+    x86_64|amd64)  DEVOS_TARGET_ARCH=x86_64 ;;
+    *) die "unsupported DEVOS_TARGET_ARCH: '${DEVOS_TARGET_ARCH:-}' (use aarch64 or x86_64)" ;;
+esac
+export DEVOS_HOST_ARCH DEVOS_TARGET_ARCH
+export DEVOS_ARCH="$DEVOS_TARGET_ARCH"          # legacy/short name used across scripts
+IS_CROSS=0
+if [ "$DEVOS_TARGET_ARCH" != "$DEVOS_HOST_ARCH" ]; then
+    IS_CROSS=1
+fi
+export IS_CROSS
 
 if [ "$DEVOS_ARCH" = "aarch64" ]; then
+    KARCH=arm64                       # `make ARCH=`
     KERNEL_MAKE_TARGET=Image
     KERNEL_IMAGE_RELPATH=arch/arm64/boot/Image
     QEMU_BINARY=qemu-system-aarch64
@@ -52,7 +66,9 @@ if [ "$DEVOS_ARCH" = "aarch64" ]; then
     OPENSSL_TARGET=linux-aarch64
     GRUB_EFI_DIR=arm64-efi
     GH_ASSET_ARCH=linux_arm64
+    GNU_CROSS_DEFAULT=aarch64-linux-gnu-
 else
+    KARCH=x86
     KERNEL_MAKE_TARGET=bzImage
     KERNEL_IMAGE_RELPATH=arch/x86/boot/bzImage
     QEMU_BINARY=qemu-system-x86_64
@@ -64,9 +80,18 @@ else
     OPENSSL_TARGET=linux-x86_64
     GRUB_EFI_DIR=x86_64-efi
     GH_ASSET_ARCH=linux_amd64
+    GNU_CROSS_DEFAULT=x86_64-linux-gnu-
 fi
-export KERNEL_MAKE_TARGET KERNEL_IMAGE_RELPATH QEMU_BINARY QEMU_MACHINE QEMU_CPU \
+export KARCH KERNEL_MAKE_TARGET KERNEL_IMAGE_RELPATH QEMU_BINARY QEMU_MACHINE QEMU_CPU \
        QEMU_APPEND MUSL_TARGET MUSL_NATIVE_URL OPENSSL_TARGET GRUB_EFI_DIR GH_ASSET_ARCH
+
+# Cross-compiler prefix: empty for native builds, GNU triple prefix when
+# cross-building (override with DEVOS_CROSS_PREFIX if your prefix differs).
+CROSS_PREFIX=""
+if [ "$IS_CROSS" = "1" ]; then
+    CROSS_PREFIX="${DEVOS_CROSS_PREFIX:-$GNU_CROSS_DEFAULT}"
+fi
+export CROSS_PREFIX
 
 # ---- paths ---------------------------------------------------------------
 # Repository root (parent of scripts/) — resolved from this file's location
@@ -79,7 +104,7 @@ export OUT="$REPO/output"
 
 export KERNEL_SRC="$WORK/linux-$KERNEL_VERSION"
 export BUSYBOX_SRC="$WORK/busybox-$BUSYBOX_VERSION"
-export ROOTFS="$WORK/rootfs"
+export ROOTFS="$WORK/rootfs-$DEVOS_ARCH"
 
 export KERNEL_TARBALL="$DL/linux-$KERNEL_VERSION.tar.xz"
 export BUSYBOX_TARBALL="$DL/busybox-$BUSYBOX_VERSION.tar.bz2"
@@ -88,6 +113,8 @@ export KERNEL_URL="https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-$KERNEL_VE
 export BUSYBOX_URL="https://busybox.net/downloads/busybox-$BUSYBOX_VERSION.tar.bz2"
 
 export KERNEL_IMAGE="$KERNEL_SRC/$KERNEL_IMAGE_RELPATH"
-export INITRAMFS="$OUT/devos-initramfs-$KERNEL_VERSION.cpio.gz"
+# artifacts carry the target-arch suffix so multi-arch builds coexist
+export KERNEL_IMAGE_OUT="$OUT/devos-Image-$KERNEL_VERSION-$DEVOS_ARCH"
+export INITRAMFS="$OUT/devos-initramfs-$KERNEL_VERSION-$DEVOS_ARCH.cpio.gz"
 
 mkdir -p "$DL" "$OUT"

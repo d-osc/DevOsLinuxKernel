@@ -8,7 +8,7 @@ source "$(dirname "$0")/common.sh"
 log "=== DevOs: assembling DevOs initramfs ==="
 require_tools cpio gzip find
 
-if [ ! -x "$WORK/busybox-root/bin/busybox" ]; then
+if [ ! -x "$WORK/busybox-root-$DEVOS_ARCH/bin/busybox" ]; then
     die "busybox not built — run scripts/20-build-busybox.sh first"
 fi
 if [ ! -f "$KERNEL_IMAGE" ]; then
@@ -18,7 +18,7 @@ fi
 log "creating rootfs tree at $ROOTFS"
 rm -rf "$ROOTFS"
 mkdir -p "$ROOTFS"
-cp -a "$WORK/busybox-root/." "$ROOTFS/"
+cp -a "$WORK/busybox-root-$DEVOS_ARCH/." "$ROOTFS/"
 
 # directory skeleton
 mkdir -p "$ROOTFS"/{proc,sys,dev,etc/init.d,tmp,root,home,opt,run,srv,boot,mnt,media}
@@ -29,9 +29,16 @@ log "applying DevOs overlay (rootfs-overlay/)"
 cp -a "$REPO/rootfs-overlay/." "$ROOTFS/"
 chmod 0755 "$ROOTFS/init" "$ROOTFS/etc/init.d/rcS" "$ROOTFS/etc/init.d/rcK" \
     "$ROOTFS/usr/share/udhcpc/default.script"
+# drop the askfirst entry for the other arch's serial console (avoids
+# "can't open /dev/ttyXX" noise from busybox init)
+if [ "$DEVOS_ARCH" = "x86_64" ]; then
+    sed -i '/^ttyAMA0::/d' "$ROOTFS/etc/inittab"
+else
+    sed -i '/^ttyS0::/d' "$ROOTFS/etc/inittab"
+fi
 
 log "installing DevOsPM package manager (/bin/dev)"
-DEVOSPM_BIN="$WORK/devospm-bin/dev"
+DEVOSPM_BIN="$WORK/devospm-bin-$DEVOS_ARCH/dev"
 if [ ! -x "$DEVOSPM_BIN" ]; then
     die "DevOsPM binary missing — run scripts/25-build-devospm.sh first"
 fi
@@ -44,7 +51,7 @@ for dpk in "$WORK"/hello-*.dpk; do
 done
 
 log "installing git + gh"
-TOOLS_STAGE="$WORK/tools-stage"
+TOOLS_STAGE="$WORK/tools-stage-$DEVOS_ARCH"
 if [ ! -x "$TOOLS_STAGE/usr/bin/git" ] || [ ! -x "$TOOLS_STAGE/usr/bin/gh" ]; then
     die "git/gh missing — run scripts/26-build-git-gh.sh first"
 fi
@@ -60,12 +67,16 @@ fi
 DEVOS_PM_VER="$(cat "$WORK/devospm-version.txt" 2>/dev/null || echo unknown)"
 DEVOS_TOOLS_VER="$(cat "$WORK/tools-versions.txt" 2>/dev/null || echo 'git + gh')"
 sed -i \
+    -e "s|^VERSION=.*|VERSION=\"$DEVOS_VERSION\"|" \
+    -e "s|^VERSION_ID=.*|VERSION_ID=\"$DEVOS_VERSION\"|" \
+    -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"DevOs $DEVOS_VERSION\"|" \
     -e "s|^DEVOS_KERNEL=.*|DEVOS_KERNEL=\"Linux $KERNEL_VERSION-devos\"|" \
     -e "s|^DEVOS_PM=.*|DEVOS_PM=\"DevOsPM $DEVOS_PM_VER\"|" \
     -e "s|^DEVOS_TOOLS=.*|DEVOS_TOOLS=\"$DEVOS_TOOLS_VER\"|" \
     -e "s|^DEVOS_ARCH=.*|DEVOS_ARCH=\"$DEVOS_ARCH\"|" \
     "$ROOTFS/etc/os-release"
 sed -i \
+    -e "s|DevOs [0-9][0-9.]* —|DevOs $DEVOS_VERSION —|" \
     -e "s|$KERNEL_VERSION-devos ([a-z0-9]*)|$KERNEL_VERSION-devos ($DEVOS_ARCH)|" \
     -e "s|DevOsPM [0-9][0-9.]*|DevOsPM $DEVOS_PM_VER|" \
     "$ROOTFS/etc/motd"
@@ -73,8 +84,9 @@ sed -i \
 log "generating device nodes with gen_init_cpio (no root required)"
 # gen_init_cpio is a kernel host tool that can emit device nodes into a cpio
 # archive without root; archives concatenate, so nodes are appended after the
-# main tree archive. (Since ~6.12 it takes the description as a file argument.)
-make -C "$KERNEL_SRC" -s usr/gen_init_cpio
+# main tree archive. (Since ~6.12 it takes the description as a file argument.
+# ARCH/CROSS_COMPILE keep kconfig from regenerating for the host arch.)
+make -C "$KERNEL_SRC" ARCH="$KARCH" CROSS_COMPILE="$CROSS_PREFIX" -s usr/gen_init_cpio
 cat > "$WORK/nodes.cpio.desc" <<EOF
 nod /dev/console 0600 0 0 c 5 1
 nod /dev/null    0666 0 0 c 1 3

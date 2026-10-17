@@ -5,9 +5,9 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-IMG="$OUT/devos-Image-$KERNEL_VERSION"
+IMG="$KERNEL_IMAGE_OUT"
 if [ ! -f "$IMG" ]; then
-    die "kernel image not found — run scripts/10-build-kernel.sh first"
+    die "kernel image not found ($IMG) — run scripts/10-build-kernel.sh first"
 fi
 if [ ! -f "$INITRAMFS" ]; then
     die "initramfs not found — run scripts/30-build-rootfs.sh first"
@@ -27,11 +27,17 @@ QEMU_CMD=(
 )
 
 if [ "${1:-}" = "--test" ]; then
+    # x86_64 under TCG emulation boots much slower than aarch64 native
+    if [ "$DEVOS_ARCH" = "x86_64" ]; then
+        BOOT_WAIT=90; TEST_TIMEOUT=480
+    else
+        BOOT_WAIT=30; TEST_TIMEOUT=300
+    fi
     log "automated boot test — starting DevOs in QEMU"
     rm -f "$OUT/boot-test.log"
     set +e
     (
-        sleep 30          # let the kernel boot to the askfirst prompt
+        sleep "$BOOT_WAIT"      # let the kernel boot to the askfirst prompt
         echo ""           # press Enter to activate the console
         sleep 3
         echo "cat /etc/os-release"
@@ -61,7 +67,7 @@ if [ "${1:-}" = "--test" ]; then
         echo "poweroff -f"
         sleep 5
         echo "echo TEST_HAD_TO_TIMEOUT"
-    ) | timeout 300 "${QEMU_CMD[@]}" 2>&1 | tee "$OUT/boot-test.log"
+    ) | timeout "$TEST_TIMEOUT" "${QEMU_CMD[@]}" 2>&1 | tee "$OUT/boot-test.log"
     rc=$?
     set -e
     echo

@@ -19,17 +19,17 @@ if ! command -v grub-mkrescue >/dev/null 2>&1 \
     exit 0
 fi
 
-if [ ! -f "$OUT/devos-Image-$KERNEL_VERSION" ]; then
+if [ ! -f "$KERNEL_IMAGE_OUT" ]; then
     die "kernel image missing — run scripts/10-build-kernel.sh first"
 fi
 if [ ! -f "$INITRAMFS" ]; then
     die "initramfs missing — run scripts/30-build-rootfs.sh first"
 fi
 
-ISO_ROOT="$WORK/iso"
+ISO_ROOT="$WORK/iso-$DEVOS_ARCH"
 rm -rf "$ISO_ROOT"
 mkdir -p "$ISO_ROOT/boot/grub"
-cp "$OUT/devos-Image-$KERNEL_VERSION" "$ISO_ROOT/boot/Image"
+cp "$KERNEL_IMAGE_OUT" "$ISO_ROOT/boot/Image"
 cp "$INITRAMFS" "$ISO_ROOT/boot/initramfs.cpio.gz"
 
 cat > "$ISO_ROOT/boot/grub/grub.cfg" <<EOF
@@ -47,5 +47,5 @@ menuentry "DevOs $DEVOS_VERSION (verbose boot)" {
 EOF
 
 log "running grub-mkrescue"
-grub-mkrescue -o "$OUT/devos-$DEVOS_VERSION.iso" "$ISO_ROOT" >/dev/null
-ok "ISO: $OUT/devos-$DEVOS_VERSION.iso ($(du -h "$OUT/devos-$DEVOS_VERSION.iso" | cut -f1))"
+grub-mkrescue -o "$OUT/devos-$DEVOS_VERSION-$DEVOS_ARCH.iso" "$ISO_ROOT" >/dev/null
+ok "ISO: $OUT/devos-$DEVOS_VERSION-$DEVOS_ARCH.iso ($(du -h "$OUT/devos-$DEVOS_VERSION-$DEVOS_ARCH.iso" | cut -f1))"

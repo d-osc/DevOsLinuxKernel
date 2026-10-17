@@ -2,28 +2,43 @@
 # 26-build-git-gh.sh — build a fully static git (HTTPS via openssl+curl on
 # musl) and add the official GitHub CLI (gh, static Go binary), for DevOs.
 #
-# Stages are cached with marker files in $WORK/.marks-gitgh — re-running
-# skips everything that already succeeded.
+# Native builds use the musl.cc native toolchain. Cross builds (e.g. x86_64
+# target on an aarch64 host) first build musl itself from source with the GNU
+# cross gcc — musl's `musl-gcc` wrapper then gives a native-speed static-musl
+# compiler for the target.
 #
-# Toolchain: musl.cc aarch64-linux-musl-native (user-local, no sudo needed).
+# Stages are cached with marker files — re-running skips finished stages.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
 N="$(nproc)"
-THIRD="$WORK/third"          # zlib/openssl/curl install prefix
-STAGE="$WORK/tools-stage"    # final /usr tree for the image
-MARK="$WORK/.marks-gitgh"
+MUSL_VERSION="1.2.5"
+THIRD="$WORK/third-$DEVOS_ARCH"            # zlib/openssl/curl install prefix
+STAGE="$WORK/tools-stage-$DEVOS_ARCH"      # final /usr tree for the image
+MARK="$WORK/.marks-gitgh-$DEVOS_ARCH"
+BUILD_TRIPLE="$DEVOS_HOST_ARCH-linux-gnu"
+# autoconf --host/--build only when actually cross-building; on native builds
+# they would make configure refuse to run its (passing) test programs
+HOST_ARGS=()
+if [ "$IS_CROSS" = "1" ]; then
+    HOST_ARGS=(--host="$MUSL_TARGET" --build="$BUILD_TRIPLE")
+    # known-Linux answers for git's unguarded AC_TRY_RUN checks (same set
+    # Buildroot uses for cross git)
+    export ac_cv_snprintf_returns_bogus=no ac_cv_fread_reads_directories=yes ac_cv_iconv_omits_bom=yes
+fi
 mkdir -p "$MARK" "$DL"
 
-log "=== DevOs: building git + gh ==="
+log "=== DevOs: building git + gh ($DEVOS_ARCH target, $DEVOS_HOST_ARCH host) ==="
 require_tools curl tar make gcc perl file xz
 
 fetch() { # fetch <url> <dest>
-    # /usr/bin/curl explicitly: the $THIRD/bin curl we just built is a musl
-    # binary and cannot run on the glibc build host
+    # /usr/bin/curl explicitly when possible: a musl binary we may have just
+    # built into $THIRD/bin cannot run on a glibc host
+    CURL_BIN=/usr/bin/curl
+    command -v "$CURL_BIN" >/dev/null 2>&1 || CURL_BIN=curl
     if [ ! -f "$2" ]; then
         log "downloading $(basename "$2")"
-        /usr/bin/curl -fL --retry 3 -C - -o "$2" "$1"
+        "$CURL_BIN" -fL --retry 3 -C - -o "$2" "$1"
     fi
 }
 
@@ -43,32 +58,68 @@ if [ -z "${gh_tag:-}" ] || [ -z "$git_ver" ] || [ -z "${ossl_ver:-}" ] || [ -z "
 fi
 log "git $git_ver · openssl $ossl_ver · curl $curl_ver · gh $gh_tag"
 
-# ---- musl native toolchain -------------------------------------------------
-if [ ! -f "$MARK/tc.done" ]; then
-    fetch "$MUSL_NATIVE_URL" "$DL/$(basename "$MUSL_NATIVE_URL")"
-    rm -rf "$WORK/musl-extract"; mkdir -p "$WORK/musl-extract"
-    tar -C "$WORK/musl-extract" -xzf "$DL/$(basename "$MUSL_NATIVE_URL")"
-    GCC_BIN="$(find "$WORK/musl-extract" -type f \
-        \( -name 'aarch64-linux-musl-gcc' -o -name 'musl-gcc' -o -name 'gcc' \) | head -1)"
-    if [ -z "$GCC_BIN" ]; then
-        die "no gcc found inside the musl toolchain archive"
+# ---- target C toolchain (CC/AR/RANLIB env for everything below) -----------
+if [ "$IS_CROSS" = "1" ]; then
+    # cross: build musl from source with the GNU cross gcc -> musl-gcc wrapper
+    MUSL_PREFIX="$WORK/musl-$DEVOS_ARCH"
+    export CC="$MUSL_PREFIX/bin/musl-gcc"
+    export AR="${CROSS_PREFIX}ar"
+    export RANLIB="${CROSS_PREFIX}ranlib"
+    if [ ! -f "$MARK/tc.done" ]; then
+        command -v "${CROSS_PREFIX}gcc" >/dev/null 2>&1 \
+            || die "cross compiler ${CROSS_PREFIX}gcc not found — install e.g. crossbuild-essential-amd64"
+        log "building musl $MUSL_VERSION for $DEVOS_ARCH with ${CROSS_PREFIX}gcc"
+        fetch "https://musl.libc.org/releases/musl-$MUSL_VERSION.tar.gz" "$DL/musl-$MUSL_VERSION.tar.gz"
+        rm -rf "$WORK/musl-$MUSL_VERSION" "$MUSL_PREFIX"
+        tar -C "$WORK" -xzf "$DL/musl-$MUSL_VERSION.tar.gz"
+        ( cd "$WORK/musl-$MUSL_VERSION" \
+            && CC="${CROSS_PREFIX}gcc" ./configure --disable-shared --prefix="$MUSL_PREFIX" \
+            && make -j"$N" && make install )
+        file "$MUSL_PREFIX/lib/libc.a" | grep -q "$DEVOS_ARCH" \
+            || die "musl built for wrong arch: $(file "$MUSL_PREFIX/lib/libc.a")"
+        ok "musl toolchain: $CC"
+        touch "$MARK/tc.done"
     fi
-    TCBIN="$(dirname "$GCC_BIN")"
-    CC_NAME="$(basename "$GCC_BIN")"
-    printf 'TCBIN=%q\nCC_NAME=%q\n' "$TCBIN" "$CC_NAME" > "$MARK/env"
-
-    export PATH="$TCBIN:$PATH"
-    CC="$CC_NAME"
-    printf 'int main(void){return 0;}\n' > "$WORK/tcsmoke.c"
-    "$CC" -static -o "$WORK/tcsmoke" "$WORK/tcsmoke.c"
-    file "$WORK/tcsmoke" | grep -Eq 'statically linked|static-pie' \
-        || die "musl gcc did not produce a static binary"
-    ok "musl toolchain ready: $CC ($(file "$WORK/tcsmoke" | cut -d: -f2 | xargs))"
-    touch "$MARK/tc.done"
+    # source-built musl lacks the kernel UAPI headers (musl.cc toolchains
+    # ship them) — install them from the kernel tree; openssl's mem_sec.c
+    # and friends need linux/*.h
+    if [ ! -f "$MARK/hdr.done" ]; then
+        if [ ! -d "$KERNEL_SRC" ]; then
+            die "kernel source missing at $KERNEL_SRC — run 10-build-kernel.sh first"
+        fi
+        log "installing kernel UAPI headers into $MUSL_PREFIX"
+        make -C "$KERNEL_SRC" ARCH="$KARCH" INSTALL_HDR_PATH="$MUSL_PREFIX" -s headers_install
+        touch "$MARK/hdr.done"
+    fi
+else
+    # native: musl.cc toolchain (user-local, no sudo needed)
+    if [ ! -f "$MARK/tc.done" ]; then
+        fetch "$MUSL_NATIVE_URL" "$DL/$(basename "$MUSL_NATIVE_URL")"
+        rm -rf "$WORK/musl-extract"; mkdir -p "$WORK/musl-extract"
+        tar -C "$WORK/musl-extract" -xzf "$DL/$(basename "$MUSL_NATIVE_URL")"
+        GCC_BIN="$(find "$WORK/musl-extract" -type f \
+            \( -name "${DEVOS_ARCH}-linux-musl-gcc" -o -name 'musl-gcc' -o -name 'gcc' \) | head -1)"
+        if [ -z "$GCC_BIN" ]; then
+            die "no gcc found inside the musl toolchain archive"
+        fi
+        TCBIN="$(dirname "$GCC_BIN")"
+        CC_NAME="$(basename "$GCC_BIN")"
+        printf 'TCBIN=%q\nCC_NAME=%q\n' "$TCBIN" "$CC_NAME" > "$MARK/env"
+        export PATH="$TCBIN:$PATH"
+        export CC="$CC_NAME"
+        printf 'int main(void){return 0;}\n' > "$WORK/tcsmoke.c"
+        "$CC" -static -o "$WORK/tcsmoke" "$WORK/tcsmoke.c"
+        file "$WORK/tcsmoke" | grep -Eq 'statically linked|static-pie' \
+            || die "musl gcc did not produce a static binary"
+        ok "musl toolchain ready: $CC"
+        touch "$MARK/tc.done"
+    fi
+    . "$MARK/env"
+    export PATH="$TCBIN:$THIRD/bin:$PATH"
+    export CC="$CC_NAME"
+    export AR=ar
+    export RANLIB=ranlib
 fi
-. "$MARK/env"
-export PATH="$TCBIN:$THIRD/bin:$PATH"
-CC="$CC_NAME"
 
 # ---- zlib (static) ----------------------------------------------------------
 if [ ! -f "$MARK/zlib.done" ]; then
@@ -92,7 +143,7 @@ if [ ! -f "$MARK/openssl.done" ]; then
     tar -C "$WORK" -xzf "$DL/openssl-$ossl_ver.tar.gz"
     ( cd "$WORK/openssl-$ossl_ver" \
         && ./Configure "$OPENSSL_TARGET" no-shared no-apps no-tests no-docs no-asm \
-               --prefix="$THIRD" --libdir=lib CC="$CC" CFLAGS="-O2" \
+               --prefix="$THIRD" --libdir=lib CC="$CC" AR="$AR" RANLIB="$RANLIB" CFLAGS="-O2" \
         && make -j"$N" \
         && make install_sw )
     touch "$MARK/openssl.done"
@@ -106,11 +157,12 @@ if [ ! -f "$MARK/curl.done" ]; then
     tar -C "$WORK" -xJf "$DL/curl-$curl_ver.tar.xz"
     ( cd "$WORK/curl-$curl_ver" \
         && ./configure --prefix="$THIRD" --disable-shared --enable-static \
+               "${HOST_ARGS[@]}" \
                --with-openssl="$THIRD" --with-zlib="$THIRD" \
                --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt \
                --without-libpsl --without-nghttp2 --without-brotli --without-zstd \
                --without-libidn2 --without-librtmp --disable-ldap --disable-ldaps \
-               CC="$CC" CFLAGS="-Os" LDFLAGS="-static" \
+               CC="$CC" AR="$AR" RANLIB="$RANLIB" CFLAGS="-Os" LDFLAGS="-static" \
         && make -j"$N" && make install )
     touch "$MARK/curl.done"
 fi
@@ -126,9 +178,10 @@ if [ ! -f "$MARK/git.done" ]; then
     # that at make time and spell out the full static link order instead.
     ( cd "$WORK/git-$git_ver" \
         && ./configure --prefix=/usr --libexecdir=/usr/libexec \
+               "${HOST_ARGS[@]}" \
                --with-curl="$THIRD" --with-openssl="$THIRD" --with-zlib="$THIRD" \
                --without-tcltk --disable-nls \
-               CC="$CC" CFLAGS="-O2" LDFLAGS="-static" \
+               CC="$CC" AR="$AR" RANLIB="$RANLIB" CFLAGS="-O2" LDFLAGS="-static" \
         && make -j"$N" NO_PERL=1 NO_PYTHON=1 NO_TCLTK=1 NO_GETTEXT=1 NO_RUST=1 \
                NO_CURL= CURLDIR="$THIRD" \
                CURL_LDFLAGS="-lcurl -lssl -lcrypto -lz" \
@@ -142,11 +195,15 @@ if [ ! -f "$MARK/git.done" ]; then
     # (-L: it is installed as a symlink to git-remote-http)
     file -L "$STAGE/usr/libexec/git-core/git-remote-https" | grep -Eq 'statically linked|static-pie' \
         || die "git-remote-https is missing or not static"
-    # end-to-end HTTPS smoke test on the build host (same static binaries)
-    log "smoke test: git ls-remote over HTTPS"
-    GIT_EXEC_PATH="$STAGE/usr/libexec/git-core" \
-        "$STAGE/usr/bin/git" ls-remote https://github.com/octocat/Hello-World.git HEAD \
-        || die "git HTTPS smoke test failed on the build host"
+    if [ "$IS_CROSS" = "0" ]; then
+        # end-to-end HTTPS smoke test on the build host (same static binaries)
+        log "smoke test: git ls-remote over HTTPS"
+        GIT_EXEC_PATH="$STAGE/usr/libexec/git-core" \
+            "$STAGE/usr/bin/git" ls-remote https://github.com/octocat/Hello-World.git HEAD \
+            || die "git HTTPS smoke test failed on the build host"
+    else
+        log "cross build — HTTPS smoke test happens in the QEMU boot test instead"
+    fi
     touch "$MARK/git.done"
 fi
 
@@ -164,9 +221,12 @@ if [ ! -f "$MARK/gh.done" ]; then
 fi
 
 # ---- verify + record --------------------------------------------------------------
-"$STAGE/usr/bin/git" --version
-"$STAGE/usr/bin/gh" --version | head -1
-file "$STAGE/usr/bin/gh" | grep -Eq 'statically linked|static-pie' \
-    || err "warning: gh binary is not static"
+if [ "$IS_CROSS" = "0" ]; then
+    "$STAGE/usr/bin/git" --version
+    "$STAGE/usr/bin/gh" --version | head -1
+else
+    file "$STAGE/usr/bin/git" | cut -d: -f2 | xargs
+    file "$STAGE/usr/bin/gh" | cut -d: -f2 | xargs
+fi
 printf 'git %s / gh %s' "$git_ver" "${gh_tag#v}" > "$WORK/tools-versions.txt"
 ok "git + gh staged in $STAGE ($(du -sh "$STAGE" | cut -f1))"
