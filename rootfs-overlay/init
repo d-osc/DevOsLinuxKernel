@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# /init — DevOs initial userspace (PID 1)
+# Mounts the core pseudo-filesystems, then hands control to BusyBox init
+# which runs /etc/init.d/rcS and spawns the console shell.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+printf '\033[1;36mDevOs\033[0m: mounting core filesystems... '
+mount -t proc     none /proc 2>/dev/null
+mount -t sysfs    none /sys  2>/dev/null
+# devtmpfs is auto-mounted on modern kernels; mount manually if not
+if ! grep -q ' /dev devtmpfs ' /proc/mounts 2>/dev/null; then
+    mount -t devtmpfs none /dev 2>/dev/null
+fi
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs  shm   /dev/shm 2>/dev/null
+mount -t tmpfs  tmpfs /tmp     2>/dev/null
+printf 'done\n'
+
+exec /sbin/init

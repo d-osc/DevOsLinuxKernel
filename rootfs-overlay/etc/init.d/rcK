@@ -1,0 +1,9 @@
+#!/bin/sh
+# /etc/init.d/rcK — DevOs shutdown script
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+echo "DevOs: shutting down..."
+ip link set lo down 2>/dev/null
+umount -a -r 2>/dev/null
+sync

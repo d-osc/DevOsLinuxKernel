@@ -1,0 +1,13 @@
+NAME="DevOs"
+VERSION="1.0.0"
+ID=devos
+VERSION_ID="1.0.0"
+PRETTY_NAME="DevOs 1.0.0"
+ANSI_COLOR="1;36"
+HOME_URL="https://www.kernel.org/"
+SUPPORT_URL="https://busybox.net/"
+DEVOS_KERNEL="Linux 7.2.11-devos"
+DEVOS_USERLAND="BusyBox 1.38.0"
+DEVOS_PM="DevOsPM 0.4.0"
+DEVOS_TOOLS=""
+DEVOS_ARCH="aarch64"

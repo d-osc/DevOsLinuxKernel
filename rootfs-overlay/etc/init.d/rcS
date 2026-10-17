@@ -1,0 +1,31 @@
+#!/bin/sh
+# /etc/init.d/rcS — DevOs system initialization (run by BusyBox init)
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+# --- hostname -------------------------------------------------------------
+hostname -F /etc/hostname 2>/dev/null || hostname devos
+
+# --- device manager --------------------------------------------------------
+# devtmpfs handles device nodes; /proc/sys/kernel/hotplug (uevent helper)
+# no longer exists on recent kernels, so mdev hotplug hooking is not needed
+if ! grep -q ' /dev devtmpfs ' /proc/mounts 2>/dev/null; then
+    mount -t devtmpfs none /dev 2>/dev/null
+    mdev -s
+fi
+
+# --- network ---------------------------------------------------------------
+ip link set lo up 2>/dev/null
+# bring up the first non-loopback interface and try DHCP in the background
+for iface in /sys/class/net/*; do
+    [ -e "$iface" ] || continue
+    name="${iface##*/}"
+    [ "$name" = "lo" ] && continue
+    ip link set "$name" up 2>/dev/null
+    udhcpc -i "$name" -n -q -t 3 -T 1 >/dev/null 2>&1 &
+    break
+done
+
+# --- banner ----------------------------------------------------------------
+echo
+cat /etc/motd

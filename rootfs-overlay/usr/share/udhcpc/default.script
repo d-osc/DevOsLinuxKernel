@@ -1,0 +1,34 @@
+#!/bin/sh
+# /usr/share/udhcpc/default.script — DevOs DHCP event handler
+# BusyBox's `make install` does not ship this file, so DevOs provides its own:
+# applies the lease to the interface, installs the default route and writes
+# /etc/resolv.conf.
+
+RESOLV=/etc/resolv.conf
+
+case "$1" in
+    deconfig)
+        ifconfig "$interface" 0.0.0.0 up
+        ;;
+    bound|renew)
+        ifconfig "$interface" "$ip" \
+            ${broadcast:+broadcast "$broadcast"} \
+            ${subnet:+netmask "$subnet"} up
+        if [ -n "$router" ]; then
+            while route del default dev "$interface" 2>/dev/null; do :; done
+            for r in $router; do
+                route add default gw "$r" dev "$interface"
+            done
+        fi
+        if [ -n "$dns" ]; then
+            : > "$RESOLV"
+            [ -n "$domain" ] && echo "search $domain" >> "$RESOLV"
+            for d in $dns; do
+                echo "nameserver $d" >> "$RESOLV"
+            done
+        fi
+        ;;
+    leasefail|nak)
+        ;;
+esac
+exit 0

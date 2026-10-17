@@ -1,0 +1,6 @@
+root:x:0:
+tty:x:5:
+disk:x:6:
+kmem:x:9:
+input:x:104:
+nogroup:x:65534:

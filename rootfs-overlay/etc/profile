@@ -1,0 +1,12 @@
+# /etc/profile — DevOs shell environment
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PS1='\u@\h:\w# '
+export TERM="${TERM:-linux}"
+export EDITOR=vi
+# DevOsPM (`dev`) system-wide package store
+export DEV_ROOT="${DEV_ROOT:-/var/lib/devos}"
+
+alias ll='ls -l'
+alias la='ls -la'
+
+umask 022

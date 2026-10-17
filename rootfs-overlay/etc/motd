@@ -1,0 +1,15 @@
+
+██████╗  ███████╗ ██╗   ██╗  ██████╗  ███████╗
+██╔══██╗ ██╔════╝ ██║   ██║ ██╔═══██╗ ██╔════╝
+██║  ██║ █████╗   ██║   ██║ ██║   ██║ ███████╗
+██║  ██║ ██╔══╝   ╚██╗ ██╔╝ ██║   ██║ ╚════██║
+██████╔╝ ███████╗  ╚████╔╝  ╚██████╔╝ ███████╗
+╚═════╝  ╚══════╝   ╚═══╝    ╚═════╝  ╚══════╝
+
+ DevOs 1.0.0 — a tiny Linux built from the latest mainline kernel
+ Kernel  7.2.11-devos (aarch64)  ·  Userland  BusyBox 1.38.0 (static)
+ PM      DevOsPM 0.3.14 (`dev`)  ·  rootfs    initramfs (RAM)
+ Tools   git + gh (GitHub CLI)   ·  network   virtio-net + DHCP
+
+ 'dev install /root/packages/hello-1.0.0.dpk' then 'dev run hello'
+ 'poweroff -f' to halt · 'help' for shell builtins
